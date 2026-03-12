@@ -78,16 +78,40 @@ Chain3State Chain3Integrator::initialize(const NBodySystem& system,
     Vec4 P1 = levi_civita_transpose_multiply(Q1, W1) * 2.0;
     Vec4 P2 = levi_civita_transpose_multiply(Q2, W2) * 2.0;
 
-    // Matriz T y vectores A (Mikkola)
+    // ── OPCIÓN B: Proyección de gauge Q·P = 0 ─────────────────────────────
+    // Proyectar P sobre el subespacio perpendicular a Q (variedad Q·P = 0).
+    // Esto satisface el constraint bilineal de la transformación KS, que
+    // es necesario para que el integrador BS (extrapolación de Richardson)
+    // converja correctamente a tiempos largos.
+    //
+    // La proyección elimina la componente de W paralela a R:
+    //   W_gauge = W_físico - (R·W / |R|²) · R_hat
+    //
+    // Almacenamos los escalares de corrección para recuperar W_físico
+    // en write_back():
+    //   gauge_s1 = Q1·P1 / |Q1|²   (antes de proyectar)
+    //   gauge_s2 = Q2·P2 / |Q2|²
+    double q1sq = Q1.norm2();
+    double q2sq = Q2.norm2();
+    double alpha1 = (Q1.x*P1.x + Q1.y*P1.y + Q1.z*P1.z + Q1.w*P1.w) / q1sq;
+    double alpha2 = (Q2.x*P2.x + Q2.y*P2.y + Q2.z*P2.z + Q2.w*P2.w) / q2sq;
+    P1 = P1 - Q1 * alpha1;   // ahora Q1·P1 = 0
+    P2 = P2 - Q2 * alpha2;   // ahora Q2·P2 = 0
+
+    // Recalcular W en gauge (ks_to_w con P proyectado)
+    Vec3 W1g = ks_to_w(Q1, P1);
+    Vec3 W2g = ks_to_w(Q2, P2);
+
+    // Matriz T y vectores A (Mikkola) — con W en gauge
     double T11 = 1.0 / m1 + 1.0 / m2;
     double T12 = -1.0 / m2;
     double T22 = 1.0 / m2 + 1.0 / m3;
 
-    Vec3 A1 = T11 * W1 + T12 * W2;
-    Vec3 A2 = T12 * W1 + T22 * W2;
+    Vec3 A1 = T11 * W1g + T12 * W2g;
+    Vec3 A2 = T12 * W1g + T22 * W2g;
 
-    // Energía cinética de Mikkola (sin factor 1/2)
-    double T_mikkola = dot(A1, W1) + dot(A2, W2);
+    // Energía cinética de Mikkola en gauge (sin factor 1/2)
+    double T_mikkola = dot(A1, W1g) + dot(A2, W2g);
 
     // Energía potencial
     double d12 = R1.norm();
@@ -101,7 +125,7 @@ Chain3State Chain3Integrator::initialize(const NBodySystem& system,
     state.P1 = P1;
     state.Q2 = Q2;
     state.P2 = P2;
-    state.energy = T_mikkola + U;   // Hamiltoniano regularizado
+    state.energy = T_mikkola + U;   // Hamiltoniano regularizado en gauge
     state.tau = 0.0;
     state.cm_pos = r0;
     state.cm_vel = v0;
@@ -109,6 +133,10 @@ Chain3State Chain3Integrator::initialize(const NBodySystem& system,
     state.masses[0] = m1;
     state.masses[1] = m2;
     state.masses[2] = m3;
+    // Correcciones de gauge: alpha = Q·P_original/|Q|²
+    // Necesarias en write_back para recuperar W_físico desde W_gauge.
+    state.gauge_s1 = alpha1;
+    state.gauge_s2 = alpha2;
 
     return state;
 }
@@ -128,6 +156,25 @@ void Chain3Integrator::write_back(const Chain3State& state, NBodySystem& system,
     Vec3 R2 = ks_to_r(state.Q2);
     Vec3 W1 = ks_to_w(state.Q1, state.P1);
     Vec3 W2 = ks_to_w(state.Q2, state.P2);
+
+    // Corrección de gauge: recuperar la componente de W paralela a R
+    // que fue eliminada en initialize() al proyectar P sobre la variedad Q·P=0.
+    //
+    // alpha = Q·P_original/|Q|² = 2·R·W_físico/|R|  (almacenado en gauge_s)
+    // ΔW = W_físico - W_gauge = (R·W/|R|²)·R = (alpha/2) · R_hat
+    //                                         = alpha · R / (2·|R|)
+    //
+    // gauge_s = 0 cuando el estado se inicializó sin proyección (RK4).
+    if (state.gauge_s1 != 0.0) {
+        double r1_norm = R1.norm();
+        if (r1_norm > 1e-14)
+            W1 = W1 + R1 * (state.gauge_s1 / (2.0 * r1_norm));
+    }
+    if (state.gauge_s2 != 0.0) {
+        double r2_norm = R2.norm();
+        if (r2_norm > 1e-14)
+            W2 = W2 + R2 * (state.gauge_s2 / (2.0 * r2_norm));
+    }
 
     // Momentos en el marco del CM
     Vec3 p1 = -W1;

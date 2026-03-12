@@ -32,11 +32,27 @@ struct Chain3State {
     // Masas de los tres cuerpos (en orden de la cadena)
     double masses[3];
 
+    // Corrección de gauge para write_back (Opción B).
+    //
+    // Al inicializar en la gauge Q·P = 0 se proyecta P y se pierde la
+    // componente de W paralela a R. Estos escalares la almacenan:
+    //
+    //   gauge_s1 = R1·W1_físico / |R1|²
+    //   gauge_s2 = R2·W2_físico / |R2|²
+    //
+    // Con ellos, write_back puede reconstruir la velocidad física:
+    //   W1_físico = ks_to_w(Q1,P1) + gauge_s1 * R1   (R1 ya normalizado por |Q1|²)
+    //
+    // Son 0.0 cuando el estado se inicializó sin proyección de gauge (RK4).
+    double gauge_s1;
+    double gauge_s2;
+
     // Constructor por defecto
     Chain3State() 
         : Q1(), P1(), Q2(), P2()
         , energy(0.0), tau(0.0)
         , cm_pos(), cm_vel(), cm_time(0.0)
+        , gauge_s1(0.0), gauge_s2(0.0)
     {
         masses[0] = masses[1] = masses[2] = 0.0;
     }
@@ -65,3 +81,4 @@ struct Chain3State {
         return (m1() > 0.0 && m2() > 0.0 && m3() > 0.0);
     }
 };
+// === DIRECTORY: regularization\hierarchy ===

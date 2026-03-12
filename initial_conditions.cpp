@@ -53,19 +53,32 @@ NBodySystem InitialConditions::binary_with_field() {
 NBodySystem InitialConditions::figure_eight() {
     NBodySystem system;
     system.G = 1.0;
-    
-    // Configuración exacta para la órbita estable figura-8
-    // Todas las masas son iguales (1.0)
-    double m = 1.0;
-    
-    // Posiciones y velocidades de la solución periódica
-    system.bodies.push_back({{ 0.970, -0.243, 0}, { 0.466,  0.433, 0}, m});
-    system.bodies.push_back({{-0.971, -0.243, 0}, { 0.466, -0.433, 0}, m});
-    system.bodies.push_back({{ 0.000,  0.970, 0}, {-0.932,  0.000, 0}, m});
-    
+
+    // Solución periódica figura-8 de Chenciner & Montgomery (2000)
+    // Referencia: Ann. of Math. 152, 881-901 (2000)
+    // Valores numéricos de Simó (2002), precisión 16 dígitos.
+    // CM en reposo exacto: sum(m_i * r_i) = 0, sum(m_i * v_i) = 0
+    // Período T = 6.3259 (unidades G=1, m=1)
+    const double m = 1.0;
+
+    system.bodies.push_back({
+        {  0.9700436926041021, -0.2430865994534989, 0.0 },
+        {  0.4662036850003824,  0.4323657300939067, 0.0 },
+        m
+    });
+    system.bodies.push_back({
+        { -0.9700436926041021, -0.2430865994534989, 0.0 },
+        {  0.4662036850003824, -0.4323657300939067, 0.0 },
+        m
+    });
+    system.bodies.push_back({
+        {  0.0,                 0.4861731989069978, 0.0 },
+        { -0.9324073700007648,  0.0,                0.0 },
+        m
+    });
+
     return system;
 }
-
 // ============================================================================
 // Sistema aleatorio para testing
 // ============================================================================

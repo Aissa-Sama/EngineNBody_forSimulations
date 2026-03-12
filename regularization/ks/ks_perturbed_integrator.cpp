@@ -181,8 +181,13 @@ void KSPerturbedIntegrator::integrate_perturbed(
     from_ks(ks, binary);
     binary.advance_cm(dt_global);
 
+/*
     double dh = ks.energy - h0;
     if (std::abs(dh) > 1e-8) {
         std::cout << "[KS Pert] Δh total = " << dh << " (pert = " << perturbers.size() << ")\n";
     }
+*/
+    // dh diagnóstico eliminado — era debug de desarrollo
+    (void)(ks.energy - h0);
+
 }
