@@ -71,6 +71,56 @@ Opciones disponibles:
 
 ---
 
+## Integración con Python (pybind11)
+
+El motor cuenta con bindings completos para Python, lo que permite crear simulaciones, manipular cuerpos y llamar al integrador jerárquico directamente desde scripts en Python, manteniendo el rendimiento nativo de C++.
+
+### 1. Descargar pybind11
+
+El proyecto no usa `pip` para pybind11 con el fin de mantener el entorno aislado. Antes de compilar, debes clonar pybind11 en la carpeta `extern/`:
+
+```powershell
+git clone https://github.com/pybind/pybind11.git extern/pybind11
+```
+
+*(Nota: la carpeta `extern/` está en el `.gitignore` y no se subirá a tu repositorio).*
+
+### 2. Compilar el módulo Python
+
+Añade las rutas a tu instalación local de Python durante la configuración de CMake:
+
+```powershell
+cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DPython_ROOT_DIR="C:/Program Files/Python311"
+cmake --build build -j 1
+```
+> **Nota:** Se recomienda `-j 1` en Windows con Ninja para evitar errores `C1060` (agotamiento de memoria del compilador) debido al tamaño del código C++ fuertemente plantillado.
+
+Esto generará el módulo compilado (ej. `nbody_core.cp311-win_amd64.pyd`) en el directorio `build/`.
+
+### 3. Uso desde Python
+
+Asegúrate de que el archivo `.pyd` esté en tu ruta de Python (o ejecuta desde el directorio `build/`):
+
+```python
+import sys
+sys.path.insert(0, "./build") # O la ruta donde esté el .pyd
+
+import nbody_core as nc
+
+# Crear sistema de prueba
+sys = nc.InitialConditions.figure_eight()
+print(f"Energía inicial: {nc.total_energy(sys):.15e}")
+
+# Crear integrador jerárquico
+integ = nc.HierarchicalIntegrator(r_ks_threshold=1.0, ks_internal_dt=1e-4)
+
+# Integrar 1 paso
+integ.step(sys, 0.01)
+print(f"Energía final: {nc.total_energy(sys):.15e}")
+```
+
+---
+
 ## Arquitectura
 
 ```
@@ -92,6 +142,7 @@ nbody_core/
 │       ├── chain3_integrator      # Cadena KS clásica
 │       └── chain3_bs_integrator   # Cadena KS con GBS
 ├── analysis/                      # Detección de binarias, observables físicos
+├── python/                        # Bindings de pybind11 (nbody_bindings.cpp)
 ├── io/                            # Logger de regímenes, snapshots CSV
 ├── validation/                    # Herramientas de validación (Viviani, etc.)
 └── tests/                         # Suite de tests verificados
@@ -100,7 +151,7 @@ nbody_core/
 ### Flujo de integración (modo directo, N=3)
 
 ```
-main.cpp
+main.cpp / Script Python
   └── HierarchicalIntegrator::step_to(system, t_final)
         └── HierarchyBuilder::build() → TRIPLE_AR_CHAIN
               └── ARChain3BSIntegrator::integrate_to_bs(state, t_final)
@@ -164,6 +215,7 @@ El integrador delega a cada subsistema según su régimen, permitiendo mezclar m
 
 - [x] **Fase 1** — Rediseño arquitectural: `step_to()` sin bloques `dt` externos
 - [x] **Fase 2** — Extrapolación GBS sobre TTL: `ARChain3BSIntegrator`
+- [x] **Fase 5/6** — Física adicional: Integrador Jerárquico completo, Fuerzas Post-Newtonianas (PN)
+- [x] **Fase 6D** — Bindings nativos Python (pybind11 local)
 - [ ] **Fase 3** — Validación con benchmarks publicados (perihelios, eyección Pitágoras completa)
-- [ ] **Fase 4** — Extensión a N > 3 en el AR-chain
-- [ ] **Fase 5** — Física adicional: mareas, correcciones post-Newtonianas (Mikkola & Merritt 2006)
+- [ ] **Fase 4** — Extensión a N > 3 en la cadena-AR

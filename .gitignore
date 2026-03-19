@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+# pybind11 (descargado localmente)
+extern/
+
+# Build
+build/
+
+# Visual Studio
+.vs/
+
+# Python extension modules
+*.pyd
