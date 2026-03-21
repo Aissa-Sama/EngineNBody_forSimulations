@@ -1,10 +1,15 @@
 // integrators/hierarchical_integrator.h
+// FASE 6A: ARChainNPNBSIntegrator con activación automática PN.
+// FASE 6C: step_to() — integra hasta t_final con callback por paso.
+// FASE 7A: GROUP_AR_CHAIN — N >= 2 cuerpos en AR-chain (cuadruples, quintuples).
 #pragma once
+#define _USE_MATH_DEFINES
+#include <functional>
 #include <memory>
 #include <vector>
 #include <map>
+#include <string>
 #include <tuple>
-#include <functional>
 #include "integrator.h"
 #include "hierarchy_node.h"
 #include "hierarchy_builder.h"
@@ -16,53 +21,11 @@
 #include "regime_logger.h"
 #include "nbody_system.h"
 
-// ============================================================================
-// HIERARCHICAL INTEGRATOR — Ruta B
-//
-// Cada paso:
-//   1. HierarchyBuilder::build() → árbol del instante actual
-//   2. Recorrer el árbol e integrar cada nodo con su método especializado:
-//        LEAF             → far (Leapfrog/RK4)
-//        PAIR_KS          → KS simple o KS perturbado (tidal_parameter)
-//        TRIPLE_CHAIN     → Chain3Integrator  (sep ≥ ar_chain_threshold)
-//        TRIPLE_AR_CHAIN  → ARChain3Integrator (sep < ar_chain_threshold)
-//        COMPOSITE        → integrar hijos recursivamente
-//
-// ── DOS MODOS DE OPERACIÓN ───────────────────────────────────────────────────
-//
-// 1. step(system, dt) — modo bloque (uso general, N > 3 o subsistemas mixtos):
-//    Avanza el sistema un intervalo dt. El integrador exterior sincroniza
-//    el tiempo entre subsistemas (campo lejano, pares KS, triples AR-chain).
-//    Cada subsistema se integra en un bloque de tamaño dt.
-//
-// 2. step_to(system, t_final) — modo directo (sistema completo AR-chain):
-//    Usado cuando el árbol entero es un único TRIPLE_AR_CHAIN.
-//    En lugar de dividir la integración en bloques de dt, delega directamente
-//    a ARChain3Integrator::integrate_to(), que integra de t=0 a t=t_final
-//    sin interrupciones. El AR-chain controla su propio tiempo.
-//
-//    CUÁNDO USAR step_to():
-//      - N=3 con ar_thresh suficientemente alto (e.g. 99.0) para que el
-//        triple esté siempre activo durante toda la simulación.
-//      - La figura-8, el problema de Pitágoras, y cualquier sistema donde
-//        los tres cuerpos permanecen fuertemente acoplados todo el tiempo.
-//
-//    POR QUÉ ES MÁS PRECISO:
-//      Los cortes de bloque fijo (modo step) acumulan error de fase antes
-//      del encuentro cercano, alterando la trayectoria. Con dt=0.001 la
-//      figura-8 diverge en t≈2.23 (sep=0.021) en lugar del encuentro real
-//      en t≈3.04 (sep=7.7e-4). Este error no se reduce reduciendo dt.
-//      Referencia: diagnóstico arquitectural en NBody_Maestro_v4 (§5).
-//
-// ── PERSISTENCIA DEL ESTADO AR-CHAIN ─────────────────────────────────────────
-//   El árbol se reconstruye desde cero en cada paso — los nodos son efímeros.
-//   El ARChain3State NO puede guardarse en el nodo porque se destruye con él.
-//
-//   Solución: ar_chain_states_ es un std::map<int, ARChain3State>
-//   indexado por clave canónica a*10000+b*100+c (con a<b<c).
-//   El estado persiste en el integrador entre pasos. No se limpia entre
-//   pasos para sobrevivir oscilaciones del builder entre regímenes.
-// ============================================================================
+#include "../regularization/chain/archain_n_state.h"
+#include "../regularization/chain/archain_n_pn_bs_integrator.h"
+// FASE 7A
+#include "../regularization/chain/archain_n_ks_integrator.h"
+
 class HierarchicalIntegrator : public Integrator {
 public:
     HierarchicalIntegrator(
@@ -73,54 +36,34 @@ public:
         RegimeLogger* logger = nullptr
     );
 
-    // ── Interfaz principal ───────────────────────────────────────────────────
-
-    /**
-     * @brief Modo bloque: avanza el sistema un intervalo dt.
-     *
-     * Uso general para N > 3 o cuando el sistema tiene subsistemas mixtos
-     * (campo lejano + pares KS + triples AR-chain).
-     */
     void step(
         NBodySystem& system,
         double dt,
         const std::vector<bool>& used
     ) override;
 
-    /**
-     * @brief Modo directo: integra de t=0 a t_final sin bloques externos.
-     *
-     * Detecta si el árbol entero es un único TRIPLE_AR_CHAIN y delega a
-     * ARChain3Integrator::integrate_to(). Si el sistema no es un triple
-     * puro, cae al modo step() normal.
-     *
-     * Uso: simulaciones donde N=3 y el triple está siempre activo
-     * (ar_thresh alto). Evita el error de fase de los bloques dt.
-     *
-     * @param system    Sistema físico de entrada/salida.
-     * @param t_final   Tiempo físico absoluto final.
-     * @param logger_cb Callback opcional invocado tras cada paso de observables
-     *                  (para logging externo). Firma: void(double t).
-     *                  Si es nullptr no se invoca nada.
-     */
     void step_to(
         NBodySystem& system,
         double t_final,
-        std::function<void(double)> logger_cb = nullptr
+        double dt_hint,
+        std::function<void(double)> on_step = nullptr
     );
 
-    /// Acceso al árbol del último paso (útil para tests y diagnóstico)
+    void step_to(
+        NBodySystem& system,
+        double t_final,
+        std::function<void(double)> on_step
+    );
+
     const HierarchyNode* last_tree() const { return last_root.get(); }
 
+    bool pn_active_for(const std::vector<int>& indices) const;
+    int  pn_active_count() const;
+
 private:
-    // -----------------------------------------------------------------------
-    // CLAVE CANÓNICA PARA EL CACHÉ
-    // Los índices se ordenan a < b < c para que el mismo triple detectado
-    // en cualquier permutación recupere el mismo estado.
-    // -----------------------------------------------------------------------
     using TripleKey = std::tuple<int,int,int>;
 
-    static TripleKey make_key(int i, int j, int k) {
+    static TripleKey make_triple_key(int i, int j, int k) {
         int a = i, b = j, c = k;
         if (a > b) std::swap(a, b);
         if (b > c) std::swap(b, c);
@@ -128,74 +71,59 @@ private:
         return {a, b, c};
     }
 
-    // -----------------------------------------------------------------------
-    // INTEGRACIÓN POR TIPO DE NODO
-    // -----------------------------------------------------------------------
-
+    // ── Despachadores ────────────────────────────────────────────────────────
     void integrate_node(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt,
-        std::vector<bool>& in_subsystem
-    );
+        HierarchyNode& node, NBodySystem& system, double dt,
+        std::vector<bool>& in_subsystem);
 
     void integrate_leaf(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt,
-        std::vector<bool>& in_subsystem
-    );
+        HierarchyNode& node, NBodySystem& system, double dt,
+        std::vector<bool>& in_subsystem);
 
     void integrate_pair_ks(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt
-    );
+        HierarchyNode& node, NBodySystem& system, double dt);
 
     void integrate_triple_chain(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt
-    );
+        HierarchyNode& node, NBodySystem& system, double dt);
 
     void integrate_triple_ar_chain(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt
-    );
+        HierarchyNode& node, NBodySystem& system, double dt);
+
+    // FASE 7A: N >= 2 cuerpos en GROUP_AR_CHAIN
+    void integrate_group_ar_chain(
+        HierarchyNode& node, NBodySystem& system, double dt);
+
+    void integrate_pn_group(
+        HierarchyNode& node, NBodySystem& system, double dt);
 
     void integrate_composite(
-        HierarchyNode& node,
-        NBodySystem& system,
-        double dt,
-        std::vector<bool>& in_subsystem
-    );
+        HierarchyNode& node, NBodySystem& system, double dt,
+        std::vector<bool>& in_subsystem);
 
-    // -----------------------------------------------------------------------
-    // DETECCIÓN DEL MODO DIRECTO
-    // Devuelve true si el árbol raíz es un único TRIPLE_AR_CHAIN con
-    // los índices (i,j,k), y rellena esos índices.
-    // -----------------------------------------------------------------------
-    bool is_pure_ar_triple(const HierarchyNode& root,
-                           int& i, int& j, int& k) const;
+    void collect_active_ar_keys(
+        const HierarchyNode& node, std::vector<TripleKey>& keys) const;
 
-    // -----------------------------------------------------------------------
-    // MIEMBROS
-    // -----------------------------------------------------------------------
-    std::unique_ptr<Integrator>   far;
-    KSIntegrator                  ks_simple;
-    KSPerturbedIntegrator         ks_perturbed;
-    Chain3Integrator              chain3;
-    ARChain3Integrator            ar_chain_;
-    HierarchyBuilder              builder;
-    double                        tidal_threshold;
-    RegimeLogger*                 logger;
-    std::size_t                   step_counter = 0;
+    // ── Miembros ─────────────────────────────────────────────────────────────
+    std::unique_ptr<Integrator>    far;
+    KSIntegrator                   ks_simple;
+    KSPerturbedIntegrator          ks_perturbed;
+    Chain3Integrator               chain3;
+    ARChain3Integrator             ar_chain_;
+    HierarchyBuilder               builder;
+    double                         tidal_threshold;
+    RegimeLogger*                  logger;
+    std::size_t                    step_counter = 0;
+    double                         dt_hint_;
 
     std::unique_ptr<HierarchyNode> last_root;
+    std::map<int, ARChain3State>   ar_chain_states_;
 
-    // Mapa de persistencia de estado AR-chain entre pasos (modo bloque).
-    // Clave: triple normalizado (a<b<c) como a*10000+b*100+c.
-    // No se limpia entre pasos para sobrevivir oscilaciones del builder.
-    std::map<int, ARChain3State> ar_chain_states_;
+    // FASE 7A: integrador KS generalizado para GROUP_AR_CHAIN
+    ARChainNKSIntegrator                         ar_chain_ks_;
+    std::map<std::string, ARChainNState>         ar_chain_n_states_;
+
+    // FASE 6A: integrador PN
+    std::unique_ptr<ARChainNPNBSIntegrator>      pn_integrator_;
+    std::map<std::string, ARChainNState>         pn_states_;
+    std::map<std::string, bool>                  pn_cache_;
 };
